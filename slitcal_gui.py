@@ -4,7 +4,8 @@
     python slitcal_gui.py --ipts 37424 --runs 180100-180132
     python slitcal_gui.py --data-root fake_SNS_EQSANS --ipts 0 --runs 900001-900033 --fit --screenshot shot.png  (test)
 
-Tab 1 (Plan): the TotalDelay values to type in for every run, from the reference offsets.
+Tab 1 (Plan): the six TotalDelay values to type in for every run. The offsets in use are read from a
+reference run (an ordinary 60 Hz band request); * marks the two discs that make the slit.
 Tab 2 (Runs): give the IPTS and run numbers; the tool reads /SNS/EQSANS/IPTS-x/nexus/EQSANS_<run>.nxs.h5,
 writes one ASCII spectra file per run in the work folder, and classifies each run (which pair is the
 slit, its wavelength and width, slit scan or width scan) from the phases stored in it.
@@ -47,61 +48,98 @@ class App:
     def _plan_tab(self, nb):
         f = ttk.Frame(nb, padding=8)
         nb.add(f, text='1  Plan the runs')
-        top = ttk.Frame(f)
-        top.pack(fill='x')
-        ttk.Label(top, text='Reference offsets (μs) — what the control system uses today:').grid(row=0, column=0, columnspan=12, sticky='w')
+        ref = ttk.LabelFrame(f, text='Offsets in use now — read them from a reference run (any run taken with an ordinary 60 Hz band request)', padding=6)
+        ref.pack(fill='x')
+        self.ref_ipts, self.ref_run, self.ref_lmin = tk.StringVar(), tk.StringVar(), tk.StringVar()
+        self.plan_root = tk.StringVar(value=sc.DATA_ROOT)
+        for j, (lab, var, wd) in enumerate((('IPTS', self.ref_ipts, 8), ('reference run', self.ref_run, 10),
+                                            ('its minimum λ (blank: from file)', self.ref_lmin, 6), ('data root', self.plan_root, 20))):
+            ttk.Label(ref, text=lab).grid(row=0, column=2 * j, sticky='e', padx=(8, 2))
+            ttk.Entry(ref, textvariable=var, width=wd).grid(row=0, column=2 * j + 1, sticky='w')
+        ttk.Button(ref, text='Read reference run', command=self.read_reference).grid(row=0, column=8, padx=10)
         self.off_vars = {}
         for j, d in enumerate(sc.ORDER):
-            ttk.Label(top, text=f'{d} (Skf{sc.DISCS[d][0]})').grid(row=1, column=2 * j, sticky='e', padx=(8, 2))
+            ttk.Label(ref, text=f'{d} (Skf{sc.DISCS[d][0]})').grid(row=1, column=(j % 6) * 2 if j < 4 else (j % 6) * 2, sticky='e', padx=(8, 2), pady=4)
             v = tk.StringVar(value=f'{sc.REF_OFFSETS[d]:.2f}')
-            ttk.Entry(top, textvariable=v, width=10).grid(row=1, column=2 * j + 1)
+            ttk.Entry(ref, textvariable=v, width=10).grid(row=1, column=(j % 6) * 2 + 1, sticky='w')
             self.off_vars[d] = v
+        self.off_source = tk.StringVar(value='Offsets above: built-in drtsans values (2026-03-04). Read a reference run to use what the IOC has now.')
+        ttk.Label(ref, textvariable=self.off_source).grid(row=2, column=0, columnspan=10, sticky='w')
+
+        opt = ttk.Frame(f)
+        opt.pack(fill='x', pady=4)
+        self.mode_var = tk.StringVar(value='band')
+        ttk.Radiobutton(opt, text='all six discs spin (six values per step)', variable=self.mode_var, value='band').pack(side='left')
+        ttk.Radiobutton(opt, text='only the pair under test spins, the others parked open', variable=self.mode_var, value='parked').pack(side='left', padx=10)
+        self.sdd_var = tk.StringVar(value='4.0')
+        ttk.Label(opt, text='SDD (m)').pack(side='left', padx=(20, 2))
+        ttk.Entry(opt, textvariable=self.sdd_var, width=5).pack(side='left')
+        ttk.Button(opt, text='Make plan', command=self.make_plan).pack(side='left', padx=20)
+        ttk.Button(opt, text='Save plan…', command=self.save_plan).pack(side='left')
         self.lams_var = tk.StringVar(value=', '.join(f'{x:g}' for x in sc.SLIT_LAMS))
         self.w_var = tk.StringVar(value=f'{sc.SLIT_W:g}')
         self.ws_var = tk.StringVar(value=', '.join(f'{x:g}' for x in sc.WIDTHS))
         self.wl_var = tk.StringVar(value=f'{sc.WIDTH_LAM:g}')
-        for i, (lab, var, wd) in enumerate((('Slit-scan wavelengths (Å)', self.lams_var, 30), ('slit width (μs)', self.w_var, 8),
-                                            ('Width-scan widths (μs)', self.ws_var, 30), ('at wavelength (Å)', self.wl_var, 8))):
-            ttk.Label(top, text=lab).grid(row=2 + i // 2, column=(i % 2) * 6, columnspan=2, sticky='e', pady=4)
-            ttk.Entry(top, textvariable=var, width=wd).grid(row=2 + i // 2, column=(i % 2) * 6 + 2, columnspan=4, sticky='w')
-        b = ttk.Frame(f)
-        b.pack(fill='x', pady=4)
-        ttk.Button(b, text='Make plan', command=self.make_plan).pack(side='left')
-        ttk.Button(b, text='Save plan as CSV…', command=self.save_plan).pack(side='left', padx=6)
-        ttk.Label(b, text='Enter the six TotalDelay values of each row as the chopper phases (60 Hz), run, and note the run number.').pack(side='left', padx=12)
-        cols = ['step', 'block', 'pair', 'slit_lambda', 'width_us'] + [f'Skf{i}_TotalDelay' for i in range(1, 7)]
-        self.plan_tv = ttk.Treeview(f, columns=cols, show='headings', height=28)
+        adv = ttk.Frame(f)
+        adv.pack(fill='x')
+        for i, (lab, var, wd) in enumerate((('slit-scan λ (Å)', self.lams_var, 24), ('slit width (μs)', self.w_var, 6),
+                                            ('width-scan widths (μs)', self.ws_var, 26), ('at λ (Å)', self.wl_var, 5))):
+            ttk.Label(adv, text=lab).pack(side='left', padx=(8, 2))
+            ttk.Entry(adv, textvariable=var, width=wd).pack(side='left')
+        ttk.Label(f, text='Each row: set the six chopper phases (TotalDelay, μs) as listed, take the run, write down the run number.').pack(anchor='w', pady=(6, 2))
+        cols = ['step', 'scan', 'pair', 'λ (Å)', 'width (μs)'] + [f'Skf{i} ({sc.BY_IDX[i]})' for i in range(1, 7)] + ['run number']
+        self.plan_tv = ttk.Treeview(f, columns=cols, show='headings', height=24)
         for c in cols:
-            self.plan_tv.heading(c, text=c.replace('_TotalDelay', ' TotalDelay'))
-            self.plan_tv.column(c, width=95 if 'Skf' in c else 70, anchor='e')
+            self.plan_tv.heading(c, text=c)
+            self.plan_tv.column(c, width=100 if 'Skf' in c else 70, anchor='e')
         self.plan_tv.pack(fill='both', expand=True)
-        self.plan_rows = []
+        self.plan_rows, self.plan_source = [], 'built-in drtsans values (2026-03-04)'
         self.make_plan()
 
     def offsets(self):
         return {d: float(v.get()) for d, v in self.off_vars.items()}
 
+    def read_reference(self):
+        try:
+            lm = float(self.ref_lmin.get()) if self.ref_lmin.get().strip() else None
+            offs, sdd, lmin, src = sc.reference_offsets(int(self.ref_ipts.get()), int(self.ref_run.get()), lm, self.plan_root.get())
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror('slitcal', f'Could not read the reference run: {e}')
+            return
+        for d in sc.ORDER:
+            self.off_vars[d].set(f'{offs[d]:.2f}')
+        self.sdd_var.set(f'{sdd:g}')
+        diff = ', '.join(f'{d} {offs[d] - sc.REF_OFFSETS[d]:+.1f}' for d in sc.ORDER)
+        self.plan_source = src
+        self.off_source.set(f'{src}. Difference from the built-in values (μs): {diff}')
+        if not self.ipts_var.get():
+            self.ipts_var.set(self.ref_ipts.get())
+        self.make_plan()
+
     def make_plan(self):
         try:
             lams = [float(x) for x in self.lams_var.get().split(',') if x.strip()]
             ws = [float(x) for x in self.ws_var.get().split(',') if x.strip()]
-            self.plan_rows = sc.make_plan(self.offsets(), lams, ws, float(self.wl_var.get()), float(self.w_var.get()))
+            self.plan_rows = sc.make_plan(self.offsets(), lams, ws, float(self.wl_var.get()), float(self.w_var.get()),
+                                          mode=self.mode_var.get(), sdd=float(self.sdd_var.get()))
         except ValueError as e:
-            messagebox.showerror('slitcal', f'Could not read the inputs: {e}')
+            messagebox.showerror('slitcal', f'Could not make the plan: {e}')
             return
         self.plan_tv.delete(*self.plan_tv.get_children())
         for r in self.plan_rows:
-            self.plan_tv.insert('', 'end', values=[r['step'], r['block'], r['pair'], r['slit_lambda'], r['width_us']] +
-                                [f"{r[f'Skf{i}_TotalDelay']:.2f}" for i in range(1, 7)])
+            vals = []
+            for i in range(1, 7):
+                if r[f'Skf{i}_action'] == 'PARK OPEN':
+                    vals.append('park open')
+                else:
+                    vals.append(f"{r[f'Skf{i}_TotalDelay']:.2f}" + (' *' if r[f'Skf{i}_action'] == 'SET' else ''))
+            self.plan_tv.insert('', 'end', values=[r['step'], r['block'], r['pair'], r['slit_lambda'], r['width_us']] + vals + [''])
 
     def save_plan(self):
-        p = filedialog.asksaveasfilename(defaultextension='.csv', initialfile='slitcal_plan.csv')
+        p = filedialog.askdirectory(title='Folder for plan.csv, worksheet.csv, steps.txt')
         if p:
-            import csv
-            with open(p, 'w', newline='') as f:
-                w = csv.DictWriter(f, fieldnames=list(self.plan_rows[0]))
-                w.writeheader()
-                w.writerows(self.plan_rows)
+            sc.write_plan_files(self.plan_rows, self.offsets(), self.plan_source, p)
+            self.say(f'plan written to {p}')
 
     # ------------------------------------------------------------ runs
     def _runs_tab(self, nb):
@@ -325,6 +363,7 @@ def main():
     ap.add_argument('--runs', help='run numbers to fill in')
     ap.add_argument('--data-root', help='archive root (default /SNS/EQSANS)')
     ap.add_argument('--work', help='work folder for the ASCII spectra')
+    ap.add_argument('--ref-run', help='reference run (ordinary 60 Hz band request) to read the offsets in use from')
     ap.add_argument('--fit', action='store_true', help='fit once loaded (scripted test)')
     ap.add_argument('--screenshot', help='save screenshots of the three tabs and quit (scripted test)')
     a = ap.parse_args()
@@ -339,6 +378,12 @@ def main():
     for var, val in ((app.ipts_var, a.ipts), (app.runs_var, a.runs), (app.root_var, a.data_root), (app.work_var, a.work)):
         if val:
             var.set(val)
+    if a.ref_run and a.ipts:
+        app.ref_ipts.set(a.ipts)
+        app.ref_run.set(a.ref_run)
+        if a.data_root:
+            app.plan_root.set(a.data_root)
+        app.read_reference()
     if a.load:
         app.load_paths(a.load)
     elif a.ipts and a.runs:
