@@ -108,7 +108,7 @@ class App:
             return
         for d in sc.ORDER:
             self.off_vars[d].set(f'{offs[d]:.2f}')
-        self.sdd_var.set(f'{sdd:g}')
+        # sdd is the reference run's; the measurement SDD stays what is in the box (4 m by default)
         diff = ', '.join(f'{d} {offs[d] - sc.REF_OFFSETS[d]:+.1f}' for d in sc.ORDER)
         self.plan_source = src
         self.off_source.set(f'{src}. Difference from the built-in values (μs): {diff}')

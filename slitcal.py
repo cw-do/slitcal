@@ -744,12 +744,12 @@ def reference_offsets(ipts, run, lmin=None, root=DATA_ROOT):
 def plan_command(a):
     out = a.out or (f'slitcal_IPTS-{a.ipts}' if a.ipts is not None else 'slitcal_plan')
     os.makedirs(out, exist_ok=True)
-    sdd = a.sdd
+    sdd = a.sdd  # SDD of the calibration runs; the reference run may have been taken at another one
     if a.ref_run:
         if a.ipts is None:
             raise SystemExit('--ref-run needs --ipts')
         try:
-            offs, sdd, lmin, source = reference_offsets(a.ipts, a.ref_run, a.ref_lmin, a.data_root)
+            offs, _, lmin, source = reference_offsets(a.ipts, a.ref_run, a.ref_lmin, a.data_root)
         except ValueError as e:
             raise SystemExit(str(e))
         print('Offsets the IOC is using, from the reference run (vs. built-in drtsans values):')
@@ -775,7 +775,7 @@ def main():
     p.add_argument('--offsets', help='JSON {disc: offset_us} instead of a reference run')
     p.add_argument('--mode', choices=('band', 'parked'), default='band',
                    help='band: request a band, then set the two discs of the pair; parked: only the pair spins')
-    p.add_argument('--sdd', type=float, default=4.0)
+    p.add_argument('--sdd', type=float, default=4.0, help='SDD of the calibration runs (m), independent of the reference run')
     p.add_argument('--data-root', default=DATA_ROOT)
     p.add_argument('--out', help='work folder (default slitcal_IPTS-<ipts>)')
     p = sub.add_parser('extract', help='NeXus -> one ASCII spectra file per run')
