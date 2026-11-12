@@ -49,8 +49,24 @@ def bands(y, lam, frac=0.01):
     return sorted(out, key=lambda b: -b[2])
 
 
+def display_map(L_det):
+    """Distance -> drawing height. The two discs of a pair are 1-1.6 cm apart; they are drawn PAIR_SPLIT
+    below and above their true distance, and the distance axis is stretched piecewise to match, so that
+    every ray passes each disc bar at the time it really reaches that disc (it rises almost vertically
+    between a and b, since crossing 1.6 cm takes only microseconds)."""
+    kx, ky = [0.0], [0.0]
+    for d in sorted(sc.ORDER, key=lambda d: sc.DISCS[d][1]):
+        kx.append(sc.DISCS[d][1])
+        ky.append(sc.DISCS[d][1] + (-PAIR_SPLIT if d.endswith('a') else PAIR_SPLIT))
+    kx.append(L_det)
+    ky.append(L_det)
+    kx, ky = np.array(kx), np.array(ky)
+    return (lambda L: np.interp(L, kx, ky)), kx
+
+
 def panel(ax, row, offsets, model, sdd=4.0):
     L_det = sc.MSD + sdd
+    Y, knots = display_map(L_det)
     cen = {d: (float(row[f'Skf{sc.DISCS[d][0]}_TotalDelay']) - offsets[d]) % sc.T60 for d in sc.ORDER
            if str(row[f'Skf{sc.DISCS[d][0]}_TotalDelay']).strip() not in ('', 'nan')}
     active = list(cen)
@@ -59,7 +75,7 @@ def panel(ax, row, offsets, model, sdd=4.0):
     # frames, monitor, detector
     for k in range(1, 4):
         ax.axvline(k * sc.T60 / 1000, color='0.85', lw=0.6, zorder=0)
-    for y, lab in ((sc.L_MON, 'monitor'), (L_det, 'detector')):
+    for y, lab in ((float(Y(sc.L_MON)), 'monitor'), (L_det, 'detector')):
         ax.axhline(y, color='0.55', lw=0.6, ls='--', zorder=1)
         ax.text(T_MAX * 0.995, y + 0.15, lab, ha='right', va='bottom', fontsize=5.5, color='0.4')
 
@@ -92,7 +108,8 @@ def panel(ax, row, offsets, model, sdd=4.0):
                 tb = (t0[i] + sc.tof(L_end, lam[i])) / 1000
                 if tb < 0 or ta > T_MAX:
                     continue
-                segs.append([(ta, 0), (tb, L_end)])
+                Ls = np.r_[knots[knots < L_end], L_end]
+                segs.append(np.column_stack([(t0[i] + sc.tof(Ls, lam[i])) / 1000, Y(Ls)]))
                 cols.append(rgb[i])
                 alph.append(0.10 if faint else float(g[i] * flux[i]))
         if segs:
@@ -103,15 +120,20 @@ def panel(ax, row, offsets, model, sdd=4.0):
             c = np.column_stack([np.array(cols), a])
             ax.add_collection(LineCollection(segs, colors=c, linewidths=0.35 if faint else 0.7, zorder=2 if faint else 4))
 
-    # discs: dark where closed
+    # discs: dark where closed; the light ends are the 0.37 ms the edge takes to cross the beam
+    # (a ray there is partly transmitted)
+    r = sc.TAU_B / 2 / 1000
     for d in active:
-        L = sc.DISCS[d][1] + (-PAIR_SPLIT if d.endswith('a') else PAIR_SPLIT)
+        L = float(Y(sc.DISCS[d][1]))
         half = sc.open_time(d) / 2
         col = '#c0392b' if d in pair else '0.15'
         for k in range(-1, 5):
             a = (cen[d] + half + k * sc.T60) / 1000
             b = (cen[d] - half + (k + 1) * sc.T60) / 1000
-            ax.plot([max(a, 0), min(b, T_MAX)], [L, L], color=col, lw=1.6, solid_capstyle='butt', zorder=5) if b > 0 and a < T_MAX else None
+            for x0, x1, al in ((a + r, b - r, 1.0), (a - r, a + r, 0.35), (b - r, b + r, 0.35)):
+                if x1 > 0 and x0 < T_MAX:
+                    ax.plot([max(x0, 0), min(x1, T_MAX)], [L, L], color=col, alpha=al, lw=1.6,
+                            solid_capstyle='butt', zorder=5)
     # labels
     y = sc.passed_by_wavelength(cen, model, active=active)
     bs = bands(y, model.lam)
@@ -125,7 +147,7 @@ def panel(ax, row, offsets, model, sdd=4.0):
                  f"{float(row['width_us']):g} us{extra}", fontsize=6.5, pad=2)
     ax.set_xlim(0, T_MAX)
     ax.set_ylim(0, L_det + 0.8)
-    ax.set_yticks([0, sc.DISCS['1a'][1], sc.DISCS['2a'][1], sc.DISCS['3a'][1], L_det])
+    ax.set_yticks([0] + [float(Y(sc.DISCS[d][1])) for d in ('1a', '2a', '3a')] + [L_det])
     ax.set_yticklabels(['0', 'st 1', 'st 2', 'st 3', f'det {L_det:.1f} m'], fontsize=5.5)
     ax.tick_params(axis='x', labelsize=5.5, length=2)
     ax.tick_params(axis='y', length=2)
@@ -152,7 +174,7 @@ def diagrams(rows, offsets, out_pdf, sdd=4.0, per_page=8, header=''):
             for ax in axs[-1]:
                 ax.set_xlabel('time after the proton pulse (ms)', fontsize=6)
             fig.suptitle(f'EQ-SANS chopper calibration runs: time-distance diagrams ({pi}/{len(pages)})', fontsize=10, y=0.985)
-            fig.text(0.5, 0.963, 'Bars: disc closed (red: pair under test; disc a drawn below b). Coloured lines: neutrons '
+            fig.text(0.5, 0.963, 'Bars: disc closed, light ends = edge crossing the beam (red: pair under test; a below b, drawn apart, rays bend to match). Coloured lines: neutrons '
                      'reaching the detector, opacity in proportion to their flux; faint: blocked.\nBox: wavelength ranges at the '
                      'detector and their share of the transmitted flux (flux spectrum and emission spread included).',
                      ha='center', va='center', fontsize=6, color='0.3')
