@@ -29,6 +29,19 @@ Columns are in beam order, each with its EPICS chopper number:
 |---|---|---|---|---|---|---|
 | EPICS chopper | Skf5 | Skf1 | Skf6 | Skf2 | Skf3 | Skf4 |
 
+### Or: the EQ-SANS scan script
+
+    $PY slitcal.py script --ipts <IPTS for the runs> --ref-run 190564 --ref-ipts 37485
+
+writes `slitcal_IPTS-<ipts>/eqsans_chopcal.py`, a script for the EQ-SANS scan server
+(`eqsans_scanfunctions_live`): `setipts`, `loadconf('conf_4000mm_2p5A_60Hz_trans')`, then per run
+shutter closed → `set_chopper_delay` ×6 → `openShutter` → `runsampleid('T-chopcal ...')` →
+`closeShutter`; at the end the choppers go back to automatic mode. Beam slit and proton charge per
+run come from the 2026 flux runs of IPTS-37618 (`flux_refs_ipts37618.json`, see `scanscript.py`):
+d25_Cd for the 3 and 4.5 Å slits, direct beam d5mm from 6 Å on (peak rate ≤ 0.62 of the highest
+already measured with d5mm), about 9.4 C in total. `runs_rates.csv` lists the expected counts.
+Empty beam: `--pos -1` (default) leaves the sample table where it is.
+
 ## 2. Measure
 
 Choppers at 60 Hz, SDD 4 m (the same for every run), attenuated empty beam, the same proton charge

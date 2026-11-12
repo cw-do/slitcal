@@ -792,15 +792,15 @@ def reference_offsets(ipts, run, lmin=None, root=DATA_ROOT):
             f'read from reference run EQSANS_{run} (standard request, minimum wavelength {lmin:g} A, SDD {sdd:g} m)')
 
 
-def plan_command(a):
-    out = a.out or (f'slitcal_IPTS-{a.ipts}' if a.ipts is not None else 'slitcal_plan')
-    os.makedirs(out, exist_ok=True)
-    sdd = a.sdd  # SDD of the calibration runs; the reference run may have been taken at another one
+def resolve_offsets(a):
+    """Offsets in use: from a reference run (--ref-run, in --ref-ipts or else --ipts), a JSON file,
+    or the built-in values. Returns (offsets, description)."""
     if a.ref_run:
-        if a.ipts is None:
-            raise SystemExit('--ref-run needs --ipts')
+        ref_ipts = a.ref_ipts if a.ref_ipts is not None else a.ipts
+        if ref_ipts is None:
+            raise SystemExit('--ref-run needs --ref-ipts or --ipts')
         try:
-            offs, _, lmin, source = reference_offsets(a.ipts, a.ref_run, a.ref_lmin, a.data_root)
+            offs, _, lmin, source = reference_offsets(ref_ipts, a.ref_run, a.ref_lmin, a.data_root)
         except ValueError as e:
             raise SystemExit(str(e))
         print('Offsets the IOC is using, from the reference run (vs. built-in drtsans values):')
@@ -811,9 +811,35 @@ def plan_command(a):
         offs, source = json.load(open(a.offsets)), f'from {a.offsets}'
     else:
         offs, source = dict(REF_OFFSETS), 'built-in drtsans values (2026-03-04)'
-    rows = make_plan(offs, mode=a.mode, sdd=sdd)
+    return offs, source
+
+
+def plan_command(a):
+    out = a.out or (f'slitcal_IPTS-{a.ipts}' if a.ipts is not None else 'slitcal_plan')
+    os.makedirs(out, exist_ok=True)
+    offs, source = resolve_offsets(a)
+    rows = make_plan(offs, mode=a.mode, sdd=a.sdd)   # a.sdd: the calibration runs' SDD, not the reference run's
     print(write_plan_files(rows, offs, source, out))
     print(f'wrote {out}/steps.txt, {out}/worksheet.csv, {out}/plan.csv, {out}/offsets_in_use.json')
+
+
+def script_command(a):
+    """Plan files plus the EQ-SANS scan script (beam slit and proton charge per run)."""
+    import scanscript
+    out = a.out or f'slitcal_IPTS-{a.ipts}'
+    os.makedirs(out, exist_ok=True)
+    offs, source = resolve_offsets(a)
+    rows = make_plan(offs, mode='band', sdd=4.0)
+    rows = scanscript.Rates().annotate(rows, offs)
+    write_plan_files(rows, offs, source, out)
+    scanscript.write_rates_csv(rows, os.path.join(out, 'runs_rates.csv'))
+    path = scanscript.write_script(rows, offs, source, a.ipts, os.path.join(out, 'eqsans_chopcal.py'), a.rack, a.pos)
+    tot = sum(x['pc'] for x in rows)
+    for x in rows:
+        print(f"step {x['step']:2d}  pair {x['pair']} {x['block']:5s} {x['slit_lambda']:5g} A {x['width_us']:6g} us  "
+              f"{x['beamslit1']:6s}  {x['pc']:5.2f} C   monitor {x['mon_expected']:8.2g}  detector {x['det_expected']:8.2g}")
+    print(f'total {tot:.2f} C, about {tot / scanscript.BEAM_C_PER_H:.1f} h of beam at the 2026 power')
+    print(f'wrote {path}, {out}/runs_rates.csv and the plan files (steps.txt, worksheet.csv, plan.csv, offsets_in_use.json)')
 
 
 def main():
@@ -827,6 +853,17 @@ def main():
     p.add_argument('--mode', choices=('band', 'parked'), default='band',
                    help='band: request a band, then set the two discs of the pair; parked: only the pair spins')
     p.add_argument('--sdd', type=float, default=4.0, help='SDD of the calibration runs (m), independent of the reference run')
+    p.add_argument('--ref-ipts', type=int, help='IPTS of the reference run (default: --ipts)')
+    p.add_argument('--data-root', default=DATA_ROOT)
+    p.add_argument('--out', help='work folder (default slitcal_IPTS-<ipts>)')
+    p = sub.add_parser('script', help='EQ-SANS scan script for the 33 runs (4 m transmission, slit and proton charge per run)')
+    p.add_argument('--ipts', type=int, required=True, help='IPTS the calibration runs are taken in (setipts)')
+    p.add_argument('--ref-run', type=int, help='a run taken with a standard 60 Hz band request; its phases give the offsets in use')
+    p.add_argument('--ref-ipts', type=int, help='IPTS of the reference run (default: --ipts)')
+    p.add_argument('--ref-lmin', type=float, help='minimum wavelength requested for the reference run (default: its Wavelength log)')
+    p.add_argument('--offsets', help='JSON {disc: offset_us} instead of a reference run')
+    p.add_argument('--rack', default='peltier', help='runsampleid sample environment (default peltier)')
+    p.add_argument('--pos', type=int, default=-1, help='runsampleid position; -1 leaves the table where it is (default)')
     p.add_argument('--data-root', default=DATA_ROOT)
     p.add_argument('--out', help='work folder (default slitcal_IPTS-<ipts>)')
     p = sub.add_parser('extract', help='NeXus -> one ASCII spectra file per run')
@@ -852,6 +889,8 @@ def main():
     a = ap.parse_args()
     if a.cmd == 'plan':
         plan_command(a)
+    elif a.cmd == 'script':
+        script_command(a)
     elif a.cmd == 'simulate':
         simulate(read_plan(a.plan), a.out, seed=a.seed, ipts=a.ipts, first_run=a.first_run)
     elif a.cmd == 'extract':
