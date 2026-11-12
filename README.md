@@ -23,6 +23,12 @@ Writes `slitcal_IPTS-37424/steps.txt` (instructions), `worksheet.csv` (the same 
 empty run-number column), `plan.csv`, `offsets_in_use.json`. 33 steps: for each pair a 500 µs slit
 at 3, 4.5, 6, 8, 10.5, 13.5 Å (slit scan) and slits of 800–1400 µs at 6 Å (width scan).
 
+Columns are in beam order, each with its EPICS chopper number:
+
+| position (upstream → downstream) | 1a | 1b | 2a | 2b | 3a | 3b |
+|---|---|---|---|---|---|---|
+| EPICS chopper | Skf5 | Skf1 | Skf6 | Skf2 | Skf3 | Skf4 |
+
 ## 2. Measure
 
 Choppers at 60 Hz, SDD 4 m (the same for every run), attenuated empty beam, the same proton charge

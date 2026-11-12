@@ -246,7 +246,7 @@ def plan_sheet(rows, offsets, source):
         L.append(head)
         if r['mode'] == 'band':
             L.append('   1. All six choppers at 60 Hz. Set the phases (TotalDelay, us):')
-            L.append('        ' + '   '.join(f'Skf{i} {r[f"Skf{i}_TotalDelay"]:9.2f}' for i in range(1, 7)))
+            L.append('        ' + '   '.join(f'{d} (Skf{DISCS[d][0]}) {r[f"Skf{DISCS[d][0]}_TotalDelay"]:9.2f}' for d in ORDER))
             L.append('      (' + ', '.join(f'Skf{DISCS[d][0]} = {d}' for d in (r['pair'] + 'a', r['pair'] + 'b')) +
                      f' make the slit; the other four are what a {r["request_lmin"]:.2f} A band request would set)')
         else:
@@ -715,10 +715,10 @@ def write_plan_files(rows, offs, source, out):
     with open(os.path.join(out, 'worksheet.csv'), 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(['step', 'scan', 'pair', 'slit_lambda_A', 'width_us'] +
-                   [f'Skf{i} ({BY_IDX[i]})' for i in range(1, 7)] + ['run_number'])
+                   [f'{d} (Skf{DISCS[d][0]})' for d in ORDER] + ['run_number'])  # beam order 1a .. 3b
         for r in rows:
             vals = []
-            for i in range(1, 7):
+            for i in (DISCS[d][0] for d in ORDER):
                 v = r[f'Skf{i}_TotalDelay']
                 vals.append('park open' if r[f'Skf{i}_action'] == 'PARK OPEN' else f'{v:.2f}')
             w.writerow([r['step'], r['block'], r['pair'], r['slit_lambda'], r['width_us']] + vals + [''])

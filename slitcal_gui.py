@@ -87,7 +87,7 @@ class App:
             ttk.Label(adv, text=lab).pack(side='left', padx=(8, 2))
             ttk.Entry(adv, textvariable=var, width=wd).pack(side='left')
         ttk.Label(f, text='Each row: set the six chopper phases (TotalDelay, μs) as listed, take the run, write down the run number.').pack(anchor='w', pady=(6, 2))
-        cols = ['step', 'scan', 'pair', 'λ (Å)', 'width (μs)'] + [f'Skf{i} ({sc.BY_IDX[i]})' for i in range(1, 7)] + ['run number']
+        cols = ['step', 'scan', 'pair', 'λ (Å)', 'width (μs)'] + [f'{d} (Skf{sc.DISCS[d][0]})' for d in sc.ORDER] + ['run number']
         self.plan_tv = ttk.Treeview(f, columns=cols, show='headings', height=24)
         for c in cols:
             self.plan_tv.heading(c, text=c)
@@ -128,7 +128,7 @@ class App:
         self.plan_tv.delete(*self.plan_tv.get_children())
         for r in self.plan_rows:
             vals = []
-            for i in range(1, 7):
+            for i in (sc.DISCS[d][0] for d in sc.ORDER):  # beam order 1a .. 3b
                 if r[f'Skf{i}_action'] == 'PARK OPEN':
                     vals.append('park open')
                 else:
