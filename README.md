@@ -69,6 +69,45 @@ own phases.) In parked mode: park the four listed discs open, set the two.
 The analysis does not need the current offsets: the recorded phases include them, and the fit
 returns the offsets themselves. The values in use are only its starting point.
 
+### In the window, step by step
+
+The IPTS and the run numbers are the only inputs. On analysis.sns.gov, in a ThinLinc session (or
+`ssh -X`) so the window can open:
+
+    cd ~/slitcal && git pull
+    $PY slitcal_gui.py --ipts <IPTS> --runs <first run>-<last run>
+
+1. Tab **2 Runs and fit** opens with the IPTS and runs filled in and starts extracting at once
+   (without the options: type them and press **Extract runs → ASCII and load**). The log has one
+   line per run; the ASCII files go to `slitcal_IPTS-<ipts>/spectra/`. A run whose file is not in
+   the archive yet is reported `not found; skipped`; press Extract again later, runs already done
+   are not read again.
+2. Check the table against `worksheet.csv`: 33 rows; block `slit` (pair 1, 2, 3 at 3, 4.5, 6, 8,
+   10.5, 13.5 Å, width about 500 µs) or `width` (6 Å, 800 to 1400 µs). The rows come in run order,
+   which is not step order: the script takes the d25_Cd runs first. A row of `—` is a run the fit
+   leaves out: a disc not at 60 Hz, or an ordinary band run (no pair forms a slit). Other runs in
+   the range do no harm, and a repeated step is used twice. If a calibration run shows `—` or the
+   wrong pair, its phases were not set as planned: look at the `Phase1..6` lines in the header of
+   its `.dat` file.
+3. Press **Fit**. It takes a few minutes; the log gives χ²/dof, the emission scale and, per pair,
+   the width-scan b − a.
+4. Tab **3 Result** opens: per disc the EPICS index, the offset the fit started from, the
+   correction, and the new 60 Hz and 30 Hz offsets. Everything is written to
+   `slitcal_IPTS-<ipts>/results/` (`results.json`, `offsets.csv`, three figures); **Save results…**
+   copies it elsewhere.
+5. Before installing, look at the three figures (slit-scan spectra and fit with residuals, width
+   scan, corrections). Then put the new values in `hexaSub.c` and the drtsans JSON.
+
+Tab **1 Plan the runs** is for planning and is not needed here. Its offsets are the fit's starting
+point and the reference the correction is added to. They come from, in this order: a reference run
+read in tab 1 (`--ref-run R --ref-ipts M` does it at start), the `offsets_in_use.json` that `plan`
+or `script` left in the work folder, the built-in drtsans values. Fit classifies the runs again
+with whatever is in tab 1 at that moment, so the order of loading does not matter, and the starting
+point changes the new offsets by less than the fit's precision. Test on a fake archive whose IOC
+offsets were up to 40 µs off the built-in values, with hidden errors up to 150 µs: from the
+reference run or the JSON, worst error 5.8 µs; from the built-in values, 6.0 µs (the two results
+within 2.5 µs of each other).
+
 ## 4. Result
 
 `results/offsets.csv`: offset in use, correction and new offset per disc (EPICS index, 60 Hz and

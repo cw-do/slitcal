@@ -2,6 +2,7 @@
 
     python slitcal_gui.py
     python slitcal_gui.py --ipts 37424 --runs 180100-180132
+    python slitcal_gui.py --ipts 37424 --runs 180100-180132 --ref-run 190564 --ref-ipts 37485
     python slitcal_gui.py --data-root fake_SNS_EQSANS --ipts 0 --runs 900001-900033 --fit --screenshot shot.png  (test)
 
 Tab 1 (Plan): the six TotalDelay values to type in for every run. The offsets in use are read from a
@@ -9,7 +10,14 @@ reference run (an ordinary 60 Hz band request); * marks the two discs that make 
 Tab 2 (Runs): give the IPTS and run numbers; the tool reads /SNS/EQSANS/IPTS-x/nexus/EQSANS_<run>.nxs.h5,
 writes one ASCII spectra file per run in the work folder, and classifies each run (which pair is the
 slit, its wavelength and width, slit scan or width scan) from the phases stored in it.
-Tab 3 (Result): new offsets, the fit figures, and Save.
+Tab 3 (Result): new offsets and the fit figures; written to <work folder>/results, Save copies them elsewhere.
+
+The IPTS and the run numbers are the only inputs the analysis needs: each run file carries its own
+phases. The offsets in tab 1 are the fit's starting point and the reference the correction is added
+to. As on the command line they come from, in this order: a reference run read in tab 1, the
+offsets_in_use.json that `slitcal.py plan/script` left in the work folder, the built-in values.
+Runs are classified again with the current offsets when Fit is pressed, so the order in which the
+reference and the runs are loaded does not matter.
 """
 import argparse
 import os
@@ -36,6 +44,7 @@ class App:
         root.geometry('1250x820')
         self.q = queue.Queue()
         self.runs, self.res, self.model = [], None, None
+        self.ref_read = False          # True once a reference run has set the offsets in tab 1
         nb = ttk.Notebook(root)
         nb.pack(fill='both', expand=True)
         self.nb = nb
@@ -112,9 +121,10 @@ class App:
         diff = ', '.join(f'{d} {offs[d] - sc.REF_OFFSETS[d]:+.1f}' for d in sc.ORDER)
         self.plan_source = src
         self.off_source.set(f'{src}. Difference from the built-in values (μs): {diff}')
-        if not self.ipts_var.get():
-            self.ipts_var.set(self.ref_ipts.get())
+        self.ref_read = True
+        self.say(f'offsets in use: {src}')
         self.make_plan()
+        self._reclassify()
 
     def make_plan(self):
         try:
@@ -185,20 +195,47 @@ class App:
         self.runs = []
         self.run_tv.delete(*self.run_tv.get_children())
 
+    def work_dir(self):
+        w = self.work_var.get().strip()
+        if w:
+            return w
+        ipts = self.ipts_var.get().strip()
+        return f'slitcal_IPTS-{ipts}' if ipts else 'slitcal_results'
+
+    def offsets_from_work(self, work):
+        """As `slitcal.py analyze`: start from the offsets plan/script wrote, unless a reference run was read."""
+        p = os.path.join(work, 'offsets_in_use.json')
+        if self.ref_read or not os.path.exists(p):
+            return
+        import json
+        try:
+            offs = json.load(open(p))
+            for d in sc.ORDER:
+                self.off_vars[d].set(f'{float(offs[d]):.2f}')
+        except (OSError, ValueError, KeyError) as e:
+            self.say(f'{p}: not used ({e})')
+            return
+        self.plan_source = f'from {p}'
+        self.off_source.set(f'Offsets above: from {p} (written by slitcal plan/script).')
+        self.say(f'starting from {p}')
+        self.make_plan()
+
     def extract_runs(self):
         try:
             ipts, runs = int(self.ipts_var.get()), sc.parse_runs(self.runs_var.get())
         except ValueError:
             messagebox.showerror('slitcal', 'IPTS must be a number and runs like 180100-180132, 180140.')
             return
-        folder = os.path.join(self.work_var.get().strip() or f'slitcal_IPTS-{ipts}', 'spectra')
+        self.offsets_from_work(self.work_dir())
+        folder = os.path.join(self.work_dir(), 'spectra')
         root = self.root_var.get()
         self.status.set(f'extracting {len(runs)} runs …')
+        offs = self.offsets()          # Tk variables are read here, never in the worker thread
 
         def work():
             files = sc.extract(ipts, runs, folder, root, progress=self.say)
             self.say(f'ASCII spectra in {folder}')
-            self._read_and_queue(files)
+            self._read_and_queue(files, offs)
         threading.Thread(target=work, daemon=True).start()
 
     def load_paths(self, paths):
@@ -210,10 +247,10 @@ class App:
                 files += dats if dats else sorted(glob.glob(os.path.join(p, '*.nxs.h5')))
             else:
                 files.append(p)
-        threading.Thread(target=self._read_and_queue, args=(files,), daemon=True).start()
+        threading.Thread(target=self._read_and_queue, args=(files, self.offsets()), daemon=True).start()
 
-    def _read_and_queue(self, files):
-        offs = self.offsets()
+    def _read_and_queue(self, files, offs):
+        """Worker thread: reads files and talks to the window only through the queue."""
         for fp in files:
             try:
                 r = sc.read_spectra(fp) if fp.endswith('.dat') else sc.read_run(fp)
@@ -223,14 +260,35 @@ class App:
                 self.say(f'{os.path.basename(fp)}: could not read ({e})')
         self.q.put(('status', 'loaded'))
 
+    def _row(self, r):
+        c, pc = r['cls'], r['pcharge']
+        return (r['run'], c['block'] if c else '—', c['pair'][0][0] if c else '—',
+                f"{c['lam']:.2f}" if c and c['lam'] else '—', f"{c['width']:.0f}" if c else '—',
+                f"{r['mon'].sum():.0f}", f"{r['det'].sum():.0f}", f"{r['L_det']:.3f}", f'{pc:.3g}')
+
+    def _reclassify(self):
+        """Classify the loaded runs again with the offsets now in tab 1 (the correction is added to these)."""
+        if not self.runs:
+            return
+        offs = self.offsets()
+        self.run_tv.delete(*self.run_tv.get_children())
+        for r in self.runs:
+            r['cls'] = sc.classify(r, offs)
+            self.run_tv.insert('', 'end', values=self._row(r))
+
     def fit(self):
+        try:
+            offs = self.offsets()
+        except ValueError:
+            messagebox.showerror('slitcal', 'The offsets in tab 1 must be numbers.')
+            return
+        self._reclassify()
         good = [r for r in self.runs if r['cls'] is not None]
         if not any(r['cls']['block'] == 'slit' for r in good):
             messagebox.showwarning('slitcal', 'No slit-scan runs loaded.')
             return
         self.fit_btn.state(['disabled'])
         self.status.set('fitting … (a few minutes)')
-        offs = self.offsets()
 
         def work():
             try:
@@ -292,6 +350,9 @@ class App:
         self.figs = sc.figures(runs, res, model, plt)
         self.show_fig()
         self.nb.select(2)
+        out = os.path.join(self.work_dir(), 'results')
+        self.save_results(out)
+        self.res_info.set(self.res_info.get() + f'\nWritten to {os.path.abspath(out)}')
 
     def show_fig(self):
         if not self.figs:
@@ -337,12 +398,7 @@ class App:
                     self.status.set(f'{len(self.runs)} runs loaded' if val == 'loaded' else val)
                 elif kind == 'run':
                     self.runs.append(val)
-                    c = val['cls']
-                    pc = val['pcharge']
-                    self.run_tv.insert('', 'end', values=(val['run'], c['block'] if c else '—', c['pair'][0][0] if c else '—',
-                                                          f"{c['lam']:.2f}" if c and c['lam'] else '—', f"{c['width']:.0f}" if c else '—',
-                                                          f"{val['mon'].sum():.0f}", f"{val['det'].sum():.0f}", f"{val['L_det']:.3f}",
-                                                          f'{pc:.3g}'))
+                    self.run_tv.insert('', 'end', values=self._row(val))
                 elif kind == 'result':
                     self.fit_btn.state(['!disabled'])
                     self.status.set('fit done')
@@ -364,6 +420,7 @@ def main():
     ap.add_argument('--data-root', help='archive root (default /SNS/EQSANS)')
     ap.add_argument('--work', help='work folder for the ASCII spectra')
     ap.add_argument('--ref-run', help='reference run (ordinary 60 Hz band request) to read the offsets in use from')
+    ap.add_argument('--ref-ipts', help='IPTS of the reference run (default: --ipts)')
     ap.add_argument('--fit', action='store_true', help='fit once loaded (scripted test)')
     ap.add_argument('--screenshot', help='save screenshots of the three tabs and quit (scripted test)')
     a = ap.parse_args()
@@ -378,8 +435,8 @@ def main():
     for var, val in ((app.ipts_var, a.ipts), (app.runs_var, a.runs), (app.root_var, a.data_root), (app.work_var, a.work)):
         if val:
             var.set(val)
-    if a.ref_run and a.ipts:
-        app.ref_ipts.set(a.ipts)
+    if a.ref_run and (a.ref_ipts or a.ipts):
+        app.ref_ipts.set(a.ref_ipts or a.ipts)
         app.ref_run.set(a.ref_run)
         if a.data_root:
             app.plan_root.set(a.data_root)
