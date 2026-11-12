@@ -158,11 +158,16 @@ def diagrams(rows, offsets, out_pdf, sdd=4.0, per_page=8, header=''):
                      ha='center', va='center', fontsize=6, color='0.3')
             if header:
                 fig.text(0.5, 0.947, header, ha='center', fontsize=5.5, color='0.45')
-            cax = fig.add_axes([0.25, 0.035, 0.5, 0.008])
+            cax = fig.add_axes([0.25, 0.062, 0.5, 0.008])
             cb = fig.colorbar(ScalarMappable(Normalize(1, LAM_TOP), cmap), cax=cax, orientation='horizontal')
             cb.set_label('wavelength (A); 15 A and longer: red', fontsize=7)
             cb.ax.tick_params(labelsize=6)
-            fig.subplots_adjust(left=0.07, right=0.98, top=0.93, bottom=0.085, hspace=0.38, wspace=0.12)
+            fig.text(0.5, 0.012, 'Note: the two discs of a pair are really 1.0-1.6 cm apart; they are drawn 0.44 m apart '
+                     '(a below, b above) so that both bars can be seen.\nRays are drawn at the true distances, so near a '
+                     'bar a ray can appear to cross it (a slow neutron takes up to ~1 ms for 0.22 m). '
+                     'Whether a neutron passes is calculated at the true disc positions.', ha='center', va='bottom',
+                     fontsize=6, color='0.2', linespacing=1.4)
+            fig.subplots_adjust(left=0.07, right=0.98, top=0.93, bottom=0.11, hspace=0.38, wspace=0.12)
             pdf.savefig(fig)
             plt.close(fig)
     return out_pdf
