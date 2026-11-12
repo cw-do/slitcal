@@ -5,7 +5,7 @@ per run from the 2026 flux measurements.
 
 writes slitcal_IPTS-<ipts>/eqsans_chopcal.py (to load on the EQ-SANS scan server) next to the plan
 files. Uses eqsans_scanfunctions_live: setipts, loadconf, beamslit1, set_chopper_delay, openShutter,
-runsampleid, closeShutter, setpv, estimatetime.
+runsampleid, closeShutter, set_choppers_auto, estimatetime.
 
 Count rates and the beam slit
 -----------------------------
@@ -165,8 +165,8 @@ def write_script(rows, offsets, source, ipts, path, rack='peltier', pos=-1):
          '#   * After the first run, check that its file records the six phases as set:',
          '#       python slitcal.py extract --ipts <ipts> --runs <first run>   (header of the .dat file)',
          '#   * Order does not matter to the analysis; a repeated run does no harm.',
-         '#   * At the end the choppers go back to automatic mode (set_choppers_auto() covers Skf1-4 only,',
-         '#     so Skf5 and Skf6 are set with setpv) and the standard configuration is reloaded.',
+         '#   * At the end the choppers go back to automatic mode (set_choppers_auto(), all six) and the',
+         '#     standard configuration is reloaded.',
          '',
          'from epics import caget',
          'from scan import *',
@@ -197,9 +197,7 @@ def write_script(rows, offsets, source, ipts, path, rack='peltier', pos=-1):
               'closeShutter()', '']
     L += ['# ---- back to normal operation',
           'closeShutter()',
-          'set_choppers_auto()',
-          "setpv('BL6:Chop:Skf5:OpModeSet', 1)",
-          "setpv('BL6:Chop:Skf6:OpModeSet', 1)",
+          'set_choppers_auto()    # all six choppers back to automatic mode',
           f"loadconf('{TRANS_CONF}')",
           '',
           'estimatetime()',

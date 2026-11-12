@@ -95,9 +95,9 @@ class Model:
     """Expected TOF histograms for given cut-out centre times. Departure times Gamma(k) with
     mean s * drtsans delay; each disc edge ramps linearly over tau_b."""
 
-    def __init__(self, phi=None, lam=(1.2, 22.0, 0.003), nt=24, k=2.0, tau_b=TAU_B):
-        # lam: wavelength grid. With every station spinning nothing beyond ~20 A reaches the counters;
-        # with stations parked open, slow alias wavelengths from earlier pulses do, so use (0.8, 35, 0.003).
+    def __init__(self, phi=None, lam=(0.8, 35.0, 0.003), nt=24, k=2.0, tau_b=TAU_B):
+        # lam: wavelength grid. Slow alias wavelengths from earlier pulses reach the counters with stations
+        # parked open, and through the second overlap window of a station-3 slit (16-25 A): keep 35 A.
         self.phi = phi or load_spectrum()
         self.lam = np.arange(*lam)
         self.nt, self.k, self.tau_b = nt, k, tau_b
@@ -242,7 +242,8 @@ def make_plan(offsets=None, lams=SLIT_LAMS, widths=WIDTHS, wlam=WIDTH_LAM, w=SLI
         for ww in widths:
             rows.append(('width', pair, wlam, ww))
     out = []
-    model = Model(lam=(1.2, 22.0, 0.01), nt=12) if mode == 'band' else None
+    # up to 35 A: the station-3 slit's second window passes slow neutrons (16-25 A) that the request must suppress
+    model = Model(lam=(0.8, 35.0, 0.01), nt=12) if mode == 'band' else None
     width_req = {}   # the width scan compares counts across widths: one request per pair, chosen at the widest slit
     if mode == 'band':
         for pair in PAIRS:
@@ -588,8 +589,8 @@ def prepare(raw, offsets, progress=print):
 
 
 def make_model(runs, spectrum=None):
-    parked = any(len(r['cls']['active']) < 6 for r in runs)
-    return Model(load_spectrum(spectrum), lam=(0.8, 35.0, 0.003) if parked else (1.2, 22.0, 0.003))
+    # 0.8-35 A in both modes: station-3 slits pass 16-25 A neutrons through the discs' second window
+    return Model(load_spectrum(spectrum), lam=(0.8, 35.0, 0.003))
 
 
 def analyze(raw, offsets=None, out=None, progress=print, spectrum=None):
@@ -708,7 +709,7 @@ def simulate(plan_rows, out, truth=None, seed=1, slit_counts=4e5, width_counts=1
     truth = truth or {'offset_error_us': {d: float(rng.uniform(-150, 150)) for d in ORDER},
                       'emission_scale': 1.15, 'das_zero_us': 6.0, 'k': 2.0, 'tau_b': TAU_B}
     parked = any(str(r.get(f'Skf{i}_action', '')) == 'PARK OPEN' for r in plan_rows for i in range(1, 7))
-    model = Model(k=truth['k'], tau_b=truth['tau_b'], lam=(0.8, 35.0, 0.003) if parked else (1.2, 22.0, 0.003))
+    model = Model(k=truth['k'], tau_b=truth['tau_b'], lam=(0.8, 35.0, 0.003))
     os.makedirs(os.path.dirname(nexus_path(ipts, 0, out)), exist_ok=True)
     json.dump(dict(truth, ioc_offsets=ioc, true_offsets={d: ioc[d] + truth['offset_error_us'][d] for d in ORDER}),
               open(os.path.join(out, 'TRUTH.json'), 'w'), indent=1)
@@ -834,12 +835,28 @@ def script_command(a):
     write_plan_files(rows, offs, source, out)
     scanscript.write_rates_csv(rows, os.path.join(out, 'runs_rates.csv'))
     path = scanscript.write_script(rows, offs, source, a.ipts, os.path.join(out, 'eqsans_chopcal.py'), a.rack, a.pos)
+    import tdplot
+    head = 'Offsets in use (us): ' + ', '.join(f'{d} {offs[d]:.2f}' for d in ORDER)
+    tdplot.diagrams(rows, offs, os.path.join(out, 'time_distance.pdf'), header=head)
     tot = sum(x['pc'] for x in rows)
     for x in rows:
         print(f"step {x['step']:2d}  pair {x['pair']} {x['block']:5s} {x['slit_lambda']:5g} A {x['width_us']:6g} us  "
               f"{x['beamslit1']:6s}  {x['pc']:5.2f} C   monitor {x['mon_expected']:8.2g}  detector {x['det_expected']:8.2g}")
     print(f'total {tot:.2f} C, about {tot / scanscript.BEAM_C_PER_H:.1f} h of beam at the 2026 power')
-    print(f'wrote {path}, {out}/runs_rates.csv and the plan files (steps.txt, worksheet.csv, plan.csv, offsets_in_use.json)')
+    print(f'wrote {path}, {out}/time_distance.pdf, {out}/runs_rates.csv and the plan files '
+          '(steps.txt, worksheet.csv, plan.csv, offsets_in_use.json)')
+
+
+def diagrams_command(a):
+    """Time-distance diagrams of every step of a plan.csv (written by plan or script)."""
+    import tdplot
+    rows = read_plan(a.plan)
+    folder = os.path.dirname(os.path.abspath(a.plan))
+    offs = json.load(open(a.offsets or os.path.join(folder, 'offsets_in_use.json')))
+    sdd = float(rows[0].get('sdd_m') or 4.0)
+    out = a.out or os.path.join(folder, 'time_distance.pdf')
+    head = 'Offsets in use (us): ' + ', '.join(f'{d} {offs[d]:.2f}' for d in ORDER)
+    print('wrote', tdplot.diagrams(rows, offs, out, sdd=sdd, per_page=a.per_page, header=head))
 
 
 def main():
@@ -866,6 +883,11 @@ def main():
     p.add_argument('--pos', type=int, default=-1, help='runsampleid position; -1 leaves the table where it is (default)')
     p.add_argument('--data-root', default=DATA_ROOT)
     p.add_argument('--out', help='work folder (default slitcal_IPTS-<ipts>)')
+    p = sub.add_parser('diagrams', help='time-distance diagram of every step of a plan.csv (PDF, wavelength in colour)')
+    p.add_argument('plan', help='plan.csv written by plan or script')
+    p.add_argument('--offsets', help='JSON {disc: offset_us}; default: offsets_in_use.json next to plan.csv')
+    p.add_argument('--per-page', type=int, default=8)
+    p.add_argument('--out', help='PDF path (default: time_distance.pdf next to plan.csv)')
     p = sub.add_parser('extract', help='NeXus -> one ASCII spectra file per run')
     p.add_argument('--ipts', type=int, required=True)
     p.add_argument('--runs', required=True, help='e.g. "180100-180132, 180140"')
@@ -891,6 +913,8 @@ def main():
         plan_command(a)
     elif a.cmd == 'script':
         script_command(a)
+    elif a.cmd == 'diagrams':
+        diagrams_command(a)
     elif a.cmd == 'simulate':
         simulate(read_plan(a.plan), a.out, seed=a.seed, ipts=a.ipts, first_run=a.first_run)
     elif a.cmd == 'extract':

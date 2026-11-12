@@ -41,6 +41,9 @@ run come from the 2026 flux runs of IPTS-37618 (`flux_refs_ipts37618.json`, see 
 d25_Cd for the 3 and 4.5 Å slits, direct beam d5mm from 6 Å on (peak rate ≤ 0.62 of the highest
 already measured with d5mm), about 9.4 C in total. `runs_rates.csv` lists the expected counts.
 Empty beam: `--pos -1` (default) leaves the sample table where it is.
+It also writes `time_distance.pdf`: a time-distance diagram of every run, eight per page, wavelength
+in colour (the eqsans-model scale), showing which wavelengths reach the detector and their share.
+For any plan: `$PY slitcal.py diagrams slitcal_IPTS-<ipts>/plan.csv`.
 
 ## 2. Measure
 
