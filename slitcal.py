@@ -189,11 +189,50 @@ def offsets_from_reference(phase, lmin_ref, sdd):
     return {d: (phase[DISCS[d][0]] - c[d]) % T60 for d in ORDER}
 
 
+def passed_by_wavelength(centres, model, s=1.0, active=None):
+    """Neutrons transmitted by all spinning discs, per wavelength of the model grid (flux-weighted)."""
+    t0, w = model.nodes(s)
+    g = np.ones_like(t0)
+    for d in (ORDER if active is None else active):
+        g = g * model.gate(t0 + model._tof[d], centres[d], open_time(d))
+    return (model.phil * w * g).sum(axis=1)
+
+
+def best_request(pair, lam_s, want, sdd, model, half=1.0):
+    """Minimum wavelength of the band request that sets the four discs not under test.
+
+    Centring the band on the slit wavelength is not always enough. A slit made by the 230-degree
+    station-3 discs has a second overlap window, about 4.1 ms long, some 6-10 ms after the slit; the
+    other stations' band windows recur every 16.7 ms, so a centred band can pass short wavelengths
+    from a later pulse through that window (at 13.5 A: 3.0-3.7 A, which outnumber the slit's own
+    neutrons by ~200). Choose, among requests whose band still contains the slit wavelength, the one
+    that maximises the share of transmitted neutrons within +-half A of the slit wavelength.
+    Returns (lmin, that share)."""
+    bw = ioc_bandwidth(sdd)
+    best = None
+    for lmin in np.round(np.arange(lam_s - bw + 0.4, lam_s - 0.4 + 1e-9, 0.1), 2):
+        if lmin < 0.5:
+            continue
+        c = ioc_centres(float(lmin), sdd)
+        cen = {d: (want[d] if d in pair else c[d]) for d in ORDER}
+        y = passed_by_wavelength(cen, model)
+        tot = y.sum()
+        if tot <= 0:
+            continue
+        inside = y[np.abs(model.lam - lam_s) <= half].sum()
+        key = (round(inside / tot, 3), -abs(lmin - (lam_s - bw / 2)))   # purity, then the centred band
+        if best is None or key > best[0]:
+            best = (key, float(lmin), inside / tot)
+    return best[1], best[2]
+
+
 def make_plan(offsets=None, lams=SLIT_LAMS, widths=WIDTHS, wlam=WIDTH_LAM, w=SLIT_W, mode='band', sdd=4.0):
     """Step list. offsets: the ones the IOC uses now (from a reference run, or built-in).
 
-    mode 'band'  : request a standard band whose middle is the slit wavelength (the IOC sets all six
-                   discs), then overwrite the two discs of the pair under test.
+    mode 'band'  : request a standard band that contains the slit wavelength (the IOC sets all six
+                   discs), then overwrite the two discs of the pair under test. The request is chosen
+                   by best_request so that no other wavelength leaks through; 'purity' is the share of
+                   transmitted neutrons within 1 A of the slit wavelength.
     mode 'parked': only the pair under test spins; the other four discs are parked open."""
     offsets = offsets or REF_OFFSETS
     rows = []
@@ -203,16 +242,28 @@ def make_plan(offsets=None, lams=SLIT_LAMS, widths=WIDTHS, wlam=WIDTH_LAM, w=SLI
         for ww in widths:
             rows.append(('width', pair, wlam, ww))
     out = []
-    bw = ioc_bandwidth(sdd)
+    model = Model(lam=(1.2, 22.0, 0.01), nt=12) if mode == 'band' else None
+    width_req = {}   # the width scan compares counts across widths: one request per pair, chosen at the widest slit
+    if mode == 'band':
+        for pair in PAIRS:
+            width_req[pair] = best_request(pair, wlam, slit_centres(pair, wlam, max(widths)), sdd, model)[0]
     for n, (block, pair, l, ww) in enumerate(rows, 1):
         want = slit_centres(pair, l, ww)
         r = dict(step=n, block=block, pair=pair[0][0], slit_lambda=l, width_us=ww, mode=mode, sdd_m=sdd)
         if mode == 'band':
-            lmin = round(l - bw / 2, 2)
+            if block == 'width':
+                lmin = width_req[pair]
+                cen = {d: (want[d] if d in pair else ioc_centres(lmin, sdd)[d]) for d in ORDER}
+                y = passed_by_wavelength(cen, model)
+                purity = y[np.abs(model.lam - l) <= 1.0].sum() / y.sum()
+            else:
+                lmin, purity = best_request(pair, l, want, sdd, model)
             base = ioc_centres(lmin, sdd)
             r['request_lmin'] = lmin
+            r['purity'] = round(purity, 4)
         else:
             r['request_lmin'] = ''
+            r['purity'] = ''
         for i in range(1, 7):                          # columns in EPICS order, as on the control screen
             d = BY_IDX[i]
             if d in pair:
