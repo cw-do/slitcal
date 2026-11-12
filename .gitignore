@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+slitcal_IPTS-*/
+slitcal_results/
+fake_SNS_EQSANS/
+plan.csv
